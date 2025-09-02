@@ -56,7 +56,7 @@ export default function Home() {
       <header className="header">
         <div className="title-group">
           <div>
-            <h1 className="title">Chat → Catalogue</h1>
+            <h1 className="title">Chat → Catalog</h1>
             <p className="tagline">Turn group chat transcripts into a neat menu/catalogue.</p>
           </div>
         </div>
@@ -71,7 +71,7 @@ export default function Home() {
       <section className="card" aria-labelledby="upload-heading">
         <div className="upload-left">
           <h3 id="upload-heading" style={{ margin: 0 }}>Upload transcript</h3>
-          <p className="small" style={{ marginTop: 6 }}>Plain `.txt` (UTF-8). Keep one conversation per file for best extraction.</p>
+          <p className="small" style={{ marginTop: 6 }}>Plain `.txt` file</p>
 
           <div className="upload-cta" style={{ marginTop: 12 }}>
             <label className="file-input" aria-label="Choose chat file">
