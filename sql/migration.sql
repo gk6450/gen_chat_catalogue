@@ -1,5 +1,3 @@
--- sql/migration.sql
-
 CREATE TABLE IF NOT EXISTS catalogs (
   id SERIAL PRIMARY KEY,
   title TEXT NOT NULL,

@@ -1,4 +1,3 @@
-// pages/api/upload.js
 import formidable from "formidable";
 import fs from "fs/promises";
 import os from "os";
@@ -12,14 +11,8 @@ export const config = {
   }
 };
 
-/* -------------------------
-   Config / Threshold
-   ------------------------- */
 const CONFIDENCE_THRESHOLD = parseFloat(process.env.CONFIDENCE_THRESHOLD ?? "0.75");
 
-/* -------------------------
-   Zod schemas for validation
-   ------------------------- */
 const ItemSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
@@ -49,9 +42,6 @@ const ResponseSchema = z
     message: "Either 'catalog' or 'note' must be present (not both)"
   });
 
-/* -------------------------
-   Form parsing helper (robust)
-   ------------------------- */
 const parseForm = (req) => {
   const form = formidable({
     multiples: false,
@@ -68,9 +58,6 @@ const parseForm = (req) => {
   });
 };
 
-/* -------------------------
-   Helpers to normalize uploaded file object
-   ------------------------- */
 function normalizeUploadedFile(files) {
   if (!files || Object.keys(files).length === 0) return undefined;
   let fileEntry = files.file ?? files.chat ?? undefined;
@@ -116,12 +103,6 @@ if (!geminiApiKey) {
 }
 const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 
-/* -------------------------
-   Gemini call (returns raw text)
-   - NOTE: We send a single 'user' content that includes the "system" instructions
-     concatenated with the "user" request. The Gemini API accepts role "user" and
-     "model" (not "system"), so using a single user content avoids the invalid-role error.
-   ------------------------- */
 async function callGemini_extractCatalogue_withConfidence(fileText, threshold) {
   const systemInstruction = `
 You are an assistant that extracts a structured product/service catalogue from a plain-text group chat transcript.
@@ -168,7 +149,6 @@ ${fileText}
 Chat transcript END:
 `.trim();
 
-  // Build one single user content (systemInstruction + task)
   const combinedUserText = `${systemInstruction}\n\nPlease produce the JSON described above for the transcript.`;
   const request = {
     model: "gemini-2.5-flash",
@@ -178,10 +158,8 @@ Chat transcript END:
     temperature: 0.0
   };
 
-  // call the SDK
   const resp = await ai.models.generateContent(request);
 
-  // tolerant extraction of produced text (SDK response shapes vary)
   let contentText;
   if (typeof resp?.text === "string" && resp.text.length > 0) contentText = resp.text;
   else if (resp?.output?.[0]?.content?.[0]?.text) contentText = resp.output[0].content[0].text;
@@ -222,7 +200,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Parse form and normalize uploaded file
     const { files } = await parseForm(req);
     const normalized = normalizeUploadedFile(files);
     if (!normalized || !normalized.filepath) {
@@ -230,23 +207,18 @@ export default async function handler(req, res) {
     }
     const filePath = normalized.filepath;
 
-    // 2. Read file contents
     const fileText = await fs.readFile(filePath, "utf8");
 
-    // 3. Call Gemini and get raw model output
     const rawModelOutput = await callGemini_extractCatalogue_withConfidence(fileText, CONFIDENCE_THRESHOLD);
 
-    // 4. Parse JSON (with recovery)
     const parsedRaw = tryParseJSONorRecover(rawModelOutput);
 
-    // 5. Validate top-level response shape
     const validatedResp = ResponseSchema.parse(parsedRaw);
 
-    // 6. Decide whether to persist or return low-confidence
     const { confidence, catalog, note } = validatedResp;
 
     if (!catalog || confidence < CONFIDENCE_THRESHOLD) {
-      // Low confidence: do NOT persist. Return a helpful message to client with model note.
+      // Low confidence: do not persist. Return a helpful message to client with model note.
       return res.status(200).json({
         ok: false,
         reason: "low_confidence",
@@ -256,14 +228,14 @@ export default async function handler(req, res) {
       });
     }
 
-    // 7. Persist catalog into DB
+    // Persist catalog into DB
     const catalogInsert = await query(
       `INSERT INTO catalogs(title, description, source_text, meta) VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
       [catalog.title, catalog.description || null, fileText, JSON.stringify({ rawModelOutput })]
     );
     const catalogId = catalogInsert.rows[0].id;
 
-    // 8. Persist items
+    // Persist items
     const insertedItems = [];
     for (const category of catalog.categories) {
       const catName = category.name;
@@ -287,10 +259,9 @@ export default async function handler(req, res) {
       }
     }
 
-    // 9. Attempt remove temp file (ignore errors)
     try { await fs.unlink(filePath).catch(()=>{}); } catch (_) {}
 
-    // 10. Return saved info to client
+    // Return saved info to client
     return res.status(200).json({
       ok: true,
       catalogId,

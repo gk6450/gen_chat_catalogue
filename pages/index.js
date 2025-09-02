@@ -1,15 +1,31 @@
-// pages/index.js
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import Link from "next/link";
 
 export default function Home() {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState(null);
   const [error, setError] = useState(null);
+  const [animate, setAnimate] = useState(false);
+
+  useEffect(() => {
+    if (response) {
+      setAnimate(false);
+      const t = setTimeout(() => setAnimate(true), 20);
+      return () => clearTimeout(t);
+    }
+    setAnimate(false);
+  }, [response]);
+
+  const onFileChange = (e) => {
+    setFile(e.target.files?.[0] ?? null);
+    setResponse(null);
+    setError(null);
+  };
 
   async function handleSubmit(e) {
-    e.preventDefault();
-    if (!file) return alert("Pick a .txt file first");
+    e?.preventDefault();
+    if (!file) return alert("Please choose a .txt file first.");
     setLoading(true);
     setError(null);
     setResponse(null);
@@ -33,76 +49,131 @@ export default function Home() {
   }
 
   return (
-    <div style={{ maxWidth: 900, margin: "32px auto", fontFamily: "system-ui, Arial" }}>
-      <h1>Chat → Catalogue (Gemini)</h1>
-      <p>Upload a chat .txt and the app will try to extract a catalogue. If the model is uncertain, it will explain why instead of producing a catalogue.</p>
+    <div className="container">
+      <header className="header">
+        <div className="title-group">
+          <div>
+            <h1 className="title">Chat → Catalogue</h1>
+            <p className="tagline">Turn group chat transcripts into a neat menu/catalogue.</p>
+          </div>
+        </div>
 
-      <form onSubmit={handleSubmit} style={{ marginBottom: 20 }}>
-        <input
-          type="file"
-          accept=".txt"
-          onChange={(e) => setFile(e.target.files?.[0] || null)}
-        />
-        <button type="submit" disabled={loading} style={{ marginLeft: 12 }}>
-          {loading ? "Processing…" : "Upload & Process"}
-        </button>
-      </form>
+        <div className="nav-actions">
+          <Link href="/catalogs" legacyBehavior>
+            <a className="link-btn">View Catalogs</a>
+          </Link>
+        </div>
+      </header>
 
-      {error && <div style={{ color: "crimson", marginBottom: 12 }}>{error}</div>}
+      <section className="card" aria-labelledby="upload-heading">
+        <div className="upload-left">
+          <h3 id="upload-heading" style={{ margin: 0 }}>Upload transcript</h3>
+          <p className="small" style={{ marginTop: 6 }}>Plain `.txt`</p>
 
-      {response && (
-        <>
-          {response.ok === false && response.reason === "low_confidence" ? (
-            <div style={{ border: "1px solid #f5c6cb", background: "#fff1f2", padding: 16, borderRadius: 8 }}>
-              <h3 style={{ marginTop: 0 }}>Unable to build catalogue — low confidence</h3>
-              <p><strong>Confidence:</strong> {(response.confidence ?? 0).toFixed(2)}</p>
-              <p><strong>Model note:</strong> {response.note}</p>
-              <details style={{ marginTop: 8 }}>
-                <summary>Show model raw output</summary>
-                <pre style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{response.rawModelOutput}</pre>
-              </details>
-            </div>
-          ) : response.ok === true ? (
-            <div>
-              <h2>Saved Catalogue (ID: {response.catalogId})</h2>
-              <p>Stored items: {response.storedItemsCount}</p>
+          <div className="upload-cta" style={{ marginTop: 12 }}>
+            <label className="file-input" aria-label="Choose chat file">
+              {file ? file.name : "Choose file"}
+              <input type="file" accept=".txt,text/plain" onChange={onFileChange} />
+            </label>
 
-              <div style={{ border: "1px solid #eee", padding: 16, borderRadius: 8 }}>
-                <h3>{response.parsedCatalogue.title}</h3>
-                <p>{response.parsedCatalogue.description}</p>
+            <button className="btn" onClick={handleSubmit} disabled={loading || !file}>
+              {loading ? "Processing…" : "Upload & Process"}
+            </button>
+          </div>
 
-                {response.parsedCatalogue.categories.map((cat, idx) => (
-                  <div key={idx} style={{ marginTop: 16 }}>
-                    <h4>{cat.name}</h4>
-                    <ul>
-                      {cat.items.map((it, i2) => (
-                        <li key={i2} style={{ marginBottom: 8 }}>
-                          <strong>{it.name}</strong>
-                          {it.price ? ` — ₹${it.price}` : ""}
-                          <div style={{ fontSize: 13, color: "#444" }}>{it.description}</div>
-                          {it.tags && it.tags.length > 0 && (
-                            <div style={{ marginTop: 6 }}>
-                              {it.tags.map((t, ti) => (
-                                <span key={ti} style={{ padding: "2px 8px", marginRight: 6, background: "#f1f1f1", borderRadius: 12, fontSize: 12 }}>
-                                  {t}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
+          <div style={{ marginTop: 12 }}>
+            <span className="small kv">Selected:</span>{" "}
+            <strong>{file ? file.name : "No file"}</strong>
+          </div>
+        </div>
+
+        {/* Minimal right help */}
+        <aside className="help" aria-hidden="false">
+          <strong style={{ display: "block", marginBottom: 8 }}>Note</strong>
+          <div className="small">Results are validated and saved only if confident. Use clear chats for best results.</div>
+        </aside>
+      </section>
+
+      <section className="result">
+        {error && (
+          <div className="warn" role="alert">
+            <strong>Error</strong>
+            <div style={{ marginTop: 6 }} className="small">{error}</div>
+          </div>
+        )}
+
+        {/* Low confidence message (no raw outputs shown to normal user) */}
+        {response && response.ok === false && response.reason === "low_confidence" && (
+          <div className={`catalog-card ${animate ? "animate-in" : ""}`}>
+            <div className="catalog-header">
+              <div>
+                <h2 className="catalog-title">Unable to build catalogue</h2>
+                <p className="catalog-desc">The system could not reliably extract a catalogue from this transcript.</p>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div className="small">Confidence</div>
+                <div style={{ fontWeight: 700, fontSize: 18 }}>{(response.confidence ?? 0).toFixed(2)}</div>
               </div>
             </div>
-          ) : (
-            <div>
-              <pre>{JSON.stringify(response, null, 2)}</pre>
+
+            <div style={{ marginTop: 12 }}>
+              <div className="small"><strong>Why?</strong></div>
+              <div style={{ marginTop: 8 }}>{response.note ?? "The content or structure of the chat made extraction uncertain."}</div>
             </div>
-          )}
-        </>
-      )}
+          </div>
+        )}
+
+        {/* Successful catalogue */}
+        {response && response.ok === true && response.parsedCatalogue && (
+          <article className={`catalog-card ${animate ? "animate-in" : ""}`} aria-labelledby="catalog-title">
+            <div className="catalog-header">
+              <div>
+                <h2 className="catalog-title" id="catalog-title">{response.parsedCatalogue.title}</h2>
+                <p className="catalog-desc">{response.parsedCatalogue.description}</p>
+                <div style={{ marginTop: 8 }} className="small">Saved Catalogue ID: <strong>{response.catalogId}</strong></div>
+              </div>
+
+              <div style={{ textAlign: "right" }}>
+                <div className="small">Items</div>
+                <div style={{ fontWeight: 700, fontSize: 18 }}>{response.storedItemsCount}</div>
+              </div>
+            </div>
+
+            {/* categories */}
+            {response.parsedCatalogue.categories.map((cat, idx) => (
+              <section className="category" key={idx}>
+                <h4>{cat.name}</h4>
+                <div>
+                  {cat.items.map((it, i2) => (
+                    <div className="item" key={i2}>
+                      <div className="left">
+                        <div className="avatar">{(it.name || "").split(/\s+/).slice(0,2).map(s=>s[0]).join("").toUpperCase()}</div>
+                        <div>
+                          <div style={{ fontWeight:700 }}>{it.name}</div>
+                          {it.description && <div className="meta">{it.description}</div>}
+                          {it.tags && it.tags.length > 0 && (
+                            <div className="tags" aria-hidden="true">
+                              {it.tags.map((t, ti) => <span className="tag" key={ti}>{t}</span>)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="price">
+                        {it.price ? `₹${it.price}` : <span style={{ color: 'var(--muted)', fontWeight:700 }}>—</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+
+            <footer style={{ marginTop: 18 }} className="small">
+              Tip: If the menu is missing items, try cleaning the transcript (one message per line) and re-uploading.
+            </footer>
+          </article>
+        )}
+      </section>
     </div>
   );
 }
