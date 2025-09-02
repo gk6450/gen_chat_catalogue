@@ -12,9 +12,8 @@ export const config = {
 
 const CONFIDENCE_THRESHOLD = parseFloat(process.env.CONFIDENCE_THRESHOLD ?? "0.75");
 
-/* -------------------------
-   Form parsing helper
-   ------------------------- */
+
+// Form parsing helper
 const parseForm = (req) => {
   const form = formidable({
     multiples: false,
@@ -31,9 +30,7 @@ const parseForm = (req) => {
   });
 };
 
-/* -------------------------
-   Helpers to normalize uploaded file object
-   ------------------------- */
+// Helpers to normalize uploaded file object
 function normalizeUploadedFile(files) {
   if (!files || Object.keys(files).length === 0) return undefined;
 
@@ -73,18 +70,15 @@ function normalizeUploadedFile(files) {
   return { filepath: found, originalFilename: fileEntry.originalFilename ?? fileEntry.name ?? null };
 }
 
-/* -------------------------
-   Gemini client init
-   ------------------------- */
+// Gemini client init
 const geminiApiKey = process.env.GEMINI_API_KEY;
 if (!geminiApiKey) {
   console.warn("GEMINI_API_KEY not set — model calls will fail until you set it.");
 }
 const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 
-/* -------------------------
-   Gemini call
-   ------------------------- */
+
+// Gemini call
 async function callGemini_extractCatalogue_withConfidence(fileText, threshold) {
   const systemInstruction = `
 You are an assistant that extracts a structured product/service catalogue from a plain-text group chat transcript.
@@ -134,7 +128,6 @@ Chat transcript END:
   const combinedUserText = `${systemInstruction}\n\nPlease produce the JSON described above for the transcript.`;
 
   try {
-    // if (ai && typeof ai.models?.generateContent === "function") {
       const request = {
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: combinedUserText }] }],
@@ -146,16 +139,13 @@ Chat transcript END:
       if (resp?.candidates?.[0]?.content?.[0]?.text) return resp.candidates[0].content[0].text;
       return JSON.stringify(resp);
     }
-
-    // throw new Error("AI client not configured on server. Set up Gemini/Vertex client or implement REST call.");
    catch (err) {
     throw new Error(`LLM call failed: ${err.message || String(err)}`);
   }
 }
 
-/* -------------------------
-   JSON parse & recovery helper
-   ------------------------- */
+
+// JSON parse & recovery helper
 function tryParseJSONorRecover(text) {
   try {
     return JSON.parse(text);
@@ -174,10 +164,8 @@ function tryParseJSONorRecover(text) {
   }
 }
 
-/* -------------------------
-   Manual validator
-   - returns { ok, errors (array), value (normalized) }
-   ------------------------- */
+
+// Manual validator
 function isObject(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -304,9 +292,8 @@ function validateModelResponse(parsed, threshold = CONFIDENCE_THRESHOLD) {
   return { ok: true, low_confidence: !isHigh, confidence, catalog: normalized, errors: [] };
 }
 
-/* -------------------------
-   API handler
-   ------------------------- */
+
+// API handler
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
