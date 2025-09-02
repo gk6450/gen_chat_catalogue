@@ -1,5 +1,7 @@
 # 📘 Chat → Catalogue
 
+[Try it now](https://gen-chat-catalogue.vercel.app/)
+
 Convert group chat transcripts (WhatsApp/Telegram/Instagram/business chats) into a clean, validated catalogue/menu using a generative LLM and a small Next.js full‑stack app.
 
 This repository is a working end‑to‑end project that allows a user to:
