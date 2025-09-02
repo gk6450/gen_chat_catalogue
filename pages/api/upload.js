@@ -3,7 +3,7 @@ import formidable from "formidable";
 import fs from "fs/promises";
 import os from "os";
 import { query } from "../../lib/db.js";
-import { GoogleGenAI } from "@google/genai"; // if you changed to Vertex/HTTP, adjust accordingly
+import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 
 export const config = {
@@ -53,7 +53,6 @@ const ResponseSchema = z
    Form parsing helper (robust)
    ------------------------- */
 const parseForm = (req) => {
-  // Ensure formidable writes a temp file so we have a path to read
   const form = formidable({
     multiples: false,
     keepExtensions: true,
@@ -74,22 +73,14 @@ const parseForm = (req) => {
    ------------------------- */
 function normalizeUploadedFile(files) {
   if (!files || Object.keys(files).length === 0) return undefined;
-
-  // Prefer standard names
   let fileEntry = files.file ?? files.chat ?? undefined;
-
-  // If still undefined, take the first value present in files object
   if (!fileEntry) {
     const vals = Object.values(files);
     if (vals.length > 0) fileEntry = vals[0];
   }
-
-  // formidable may return an array for the entry if multiples were allowed
   if (Array.isArray(fileEntry)) fileEntry = fileEntry[0];
-
   if (!fileEntry) return undefined;
 
-  // possible properties across formidable versions / hosting environments
   const candidates = [
     fileEntry.filepath,
     fileEntry.filePath,
@@ -104,7 +95,6 @@ function normalizeUploadedFile(files) {
 
   const found = candidates.find((c) => typeof c === "string" && c.length > 0);
 
-  // also try to inspect any string-valued property that looks like a path
   if (!found) {
     for (const val of Object.values(fileEntry)) {
       if (typeof val === "string" && (val.startsWith("/") || val.includes(os.tmpdir()))) {
@@ -118,7 +108,7 @@ function normalizeUploadedFile(files) {
 }
 
 /* -------------------------
-   Gemini client init (adjust if using Vertex client instead)
+   Gemini client init
    ------------------------- */
 const geminiApiKey = process.env.GEMINI_API_KEY;
 if (!geminiApiKey) {
@@ -128,6 +118,9 @@ const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 
 /* -------------------------
    Gemini call (returns raw text)
+   - NOTE: We send a single 'user' content that includes the "system" instructions
+     concatenated with the "user" request. The Gemini API accepts role "user" and
+     "model" (not "system"), so using a single user content avoids the invalid-role error.
    ------------------------- */
 async function callGemini_extractCatalogue_withConfidence(fileText, threshold) {
   const systemInstruction = `
@@ -175,19 +168,22 @@ ${fileText}
 Chat transcript END:
 `.trim();
 
+  // Build one single user content (systemInstruction + task)
+  const combinedUserText = `${systemInstruction}\n\nPlease produce the JSON described above for the transcript.`;
   const request = {
     model: "gemini-2.5-flash",
     contents: [
-      { role: "system", parts: [{ text: systemInstruction }] },
-      { role: "user", parts: [{ text: "Please produce the JSON described above for the transcript." }] }
+      { role: "user", parts: [{ text: combinedUserText }] }
     ],
     temperature: 0.0
   };
 
+  // call the SDK
   const resp = await ai.models.generateContent(request);
 
+  // tolerant extraction of produced text (SDK response shapes vary)
   let contentText;
-  if (resp?.text) contentText = resp.text;
+  if (typeof resp?.text === "string" && resp.text.length > 0) contentText = resp.text;
   else if (resp?.output?.[0]?.content?.[0]?.text) contentText = resp.output[0].content[0].text;
   else if (resp?.candidates?.[0]?.content?.[0]?.text) contentText = resp.candidates[0].content[0].text;
   else contentText = JSON.stringify(resp);
@@ -291,10 +287,8 @@ export default async function handler(req, res) {
       }
     }
 
-    // 9. Optionally remove temp file (ignore errors)
-    try {
-      await fs.unlink(filePath).catch(() => {});
-    } catch (_) {}
+    // 9. Attempt remove temp file (ignore errors)
+    try { await fs.unlink(filePath).catch(()=>{}); } catch (_) {}
 
     // 10. Return saved info to client
     return res.status(200).json({
