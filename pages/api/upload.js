@@ -1,8 +1,9 @@
 // pages/api/upload.js
 import formidable from "formidable";
 import fs from "fs/promises";
+import os from "os";
 import { query } from "../../lib/db.js";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI } from "@google/genai"; // if you changed to Vertex/HTTP, adjust accordingly
 import { z } from "zod";
 
 export const config = {
@@ -38,30 +39,28 @@ const CatalogSchema = z.object({
   categories: z.array(CategorySchema)
 });
 
-/**
- * Response shape the model should return:
- * {
- *   "confidence": 0.87,
- *   "catalog": { ... }   // OR
- *   "note": "Unable to build catalogue because ..."
- * }
- */
 const ResponseSchema = z
   .object({
     confidence: z.number().min(0).max(1),
     catalog: CatalogSchema.optional(),
     note: z.string().optional()
   })
-  .refine(
-    (obj) => Boolean(obj.catalog) !== Boolean(obj.note),
-    { message: "Either 'catalog' or 'note' must be present (not both)" }
-  );
+  .refine((obj) => Boolean(obj.catalog) !== Boolean(obj.note), {
+    message: "Either 'catalog' or 'note' must be present (not both)"
+  });
 
 /* -------------------------
-   Form parsing helper
+   Form parsing helper (robust)
    ------------------------- */
 const parseForm = (req) => {
-  const form = formidable({ multiples: false });
+  // Ensure formidable writes a temp file so we have a path to read
+  const form = formidable({
+    multiples: false,
+    keepExtensions: true,
+    uploadDir: os.tmpdir(),
+    maxFileSize: 10 * 1024 * 1024 // 10MB
+  });
+
   return new Promise((resolve, reject) => {
     form.parse(req, (err, fields, files) => {
       if (err) return reject(err);
@@ -71,7 +70,55 @@ const parseForm = (req) => {
 };
 
 /* -------------------------
-   Gemini client init
+   Helpers to normalize uploaded file object
+   ------------------------- */
+function normalizeUploadedFile(files) {
+  if (!files || Object.keys(files).length === 0) return undefined;
+
+  // Prefer standard names
+  let fileEntry = files.file ?? files.chat ?? undefined;
+
+  // If still undefined, take the first value present in files object
+  if (!fileEntry) {
+    const vals = Object.values(files);
+    if (vals.length > 0) fileEntry = vals[0];
+  }
+
+  // formidable may return an array for the entry if multiples were allowed
+  if (Array.isArray(fileEntry)) fileEntry = fileEntry[0];
+
+  if (!fileEntry) return undefined;
+
+  // possible properties across formidable versions / hosting environments
+  const candidates = [
+    fileEntry.filepath,
+    fileEntry.filePath,
+    fileEntry.path,
+    fileEntry.file?.filepath,
+    fileEntry.file?.path,
+    fileEntry.tempFilePath,
+    fileEntry.tempFilepath,
+    fileEntry.tempfile,
+    fileEntry.file?.tempfile
+  ];
+
+  const found = candidates.find((c) => typeof c === "string" && c.length > 0);
+
+  // also try to inspect any string-valued property that looks like a path
+  if (!found) {
+    for (const val of Object.values(fileEntry)) {
+      if (typeof val === "string" && (val.startsWith("/") || val.includes(os.tmpdir()))) {
+        return { filepath: val, originalFilename: fileEntry.originalFilename ?? fileEntry.name ?? null };
+      }
+    }
+    return undefined;
+  }
+
+  return { filepath: found, originalFilename: fileEntry.originalFilename ?? fileEntry.name ?? null };
+}
+
+/* -------------------------
+   Gemini client init (adjust if using Vertex client instead)
    ------------------------- */
 const geminiApiKey = process.env.GEMINI_API_KEY;
 if (!geminiApiKey) {
@@ -83,7 +130,6 @@ const ai = new GoogleGenAI({ apiKey: geminiApiKey });
    Gemini call (returns raw text)
    ------------------------- */
 async function callGemini_extractCatalogue_withConfidence(fileText, threshold) {
-  // The system prompt instructs the model to always return strict JSON with confidence.
   const systemInstruction = `
 You are an assistant that extracts a structured product/service catalogue from a plain-text group chat transcript.
 Return ONLY valid JSON (no surrounding explanation). The JSON MUST be a top-level object with:
@@ -130,7 +176,7 @@ Chat transcript END:
 `.trim();
 
   const request = {
-    model: "gemini-2.5-flash", // change if needed per your account
+    model: "gemini-2.5-flash",
     contents: [
       { role: "system", parts: [{ text: systemInstruction }] },
       { role: "user", parts: [{ text: "Please produce the JSON described above for the transcript." }] }
@@ -140,7 +186,6 @@ Chat transcript END:
 
   const resp = await ai.models.generateContent(request);
 
-  // tolerant extraction of produced text (SDK response shapes vary)
   let contentText;
   if (resp?.text) contentText = resp.text;
   else if (resp?.output?.[0]?.content?.[0]?.text) contentText = resp.output[0].content[0].text;
@@ -157,7 +202,6 @@ function tryParseJSONorRecover(text) {
   try {
     return JSON.parse(text);
   } catch (e) {
-    // Extract substring between first '{' and last '}' and parse
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
     if (start !== -1 && end !== -1) {
@@ -182,22 +226,27 @@ export default async function handler(req, res) {
   }
 
   try {
+    // 1. Parse form and normalize uploaded file
     const { files } = await parseForm(req);
-    const uploaded = files?.file || files?.chat;
-    if (!uploaded) return res.status(400).json({ error: "No file uploaded (field name: file)" });
+    const normalized = normalizeUploadedFile(files);
+    if (!normalized || !normalized.filepath) {
+      return res.status(400).json({ error: "No file uploaded or unable to determine temp file path. Make sure the upload field name is 'file' and that a .txt file is being uploaded." });
+    }
+    const filePath = normalized.filepath;
 
-    const fileText = await fs.readFile(uploaded.filepath, "utf8");
+    // 2. Read file contents
+    const fileText = await fs.readFile(filePath, "utf8");
 
-    // 1. Call Gemini and get raw model output
+    // 3. Call Gemini and get raw model output
     const rawModelOutput = await callGemini_extractCatalogue_withConfidence(fileText, CONFIDENCE_THRESHOLD);
 
-    // 2. Parse JSON (with recovery)
+    // 4. Parse JSON (with recovery)
     const parsedRaw = tryParseJSONorRecover(rawModelOutput);
 
-    // 3. Validate top-level response shape
+    // 5. Validate top-level response shape
     const validatedResp = ResponseSchema.parse(parsedRaw);
 
-    // 4. Decide whether to persist or return low-confidence
+    // 6. Decide whether to persist or return low-confidence
     const { confidence, catalog, note } = validatedResp;
 
     if (!catalog || confidence < CONFIDENCE_THRESHOLD) {
@@ -211,13 +260,14 @@ export default async function handler(req, res) {
       });
     }
 
-    // 5. Persist catalog into DB
+    // 7. Persist catalog into DB
     const catalogInsert = await query(
       `INSERT INTO catalogs(title, description, source_text, meta) VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
       [catalog.title, catalog.description || null, fileText, JSON.stringify({ rawModelOutput })]
     );
     const catalogId = catalogInsert.rows[0].id;
 
+    // 8. Persist items
     const insertedItems = [];
     for (const category of catalog.categories) {
       const catName = category.name;
@@ -241,7 +291,12 @@ export default async function handler(req, res) {
       }
     }
 
-    // 6. Return saved info to client
+    // 9. Optionally remove temp file (ignore errors)
+    try {
+      await fs.unlink(filePath).catch(() => {});
+    } catch (_) {}
+
+    // 10. Return saved info to client
     return res.status(200).json({
       ok: true,
       catalogId,
@@ -249,9 +304,8 @@ export default async function handler(req, res) {
       confidence,
       parsedCatalogue: catalog
     });
-
   } catch (err) {
-    console.error(err);
+    console.error("upload handler error:", err);
     return res.status(500).json({ error: err.message || String(err) });
   }
 }
