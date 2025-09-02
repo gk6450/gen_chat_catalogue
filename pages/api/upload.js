@@ -3,7 +3,6 @@ import fs from "fs/promises";
 import os from "os";
 import { query } from "../../lib/db.js";
 import { GoogleGenAI } from "@google/genai";
-import { z } from "zod";
 
 export const config = {
   api: {
@@ -13,35 +12,9 @@ export const config = {
 
 const CONFIDENCE_THRESHOLD = parseFloat(process.env.CONFIDENCE_THRESHOLD ?? "0.75");
 
-const ItemSchema = z.object({
-  name: z.string().min(1),
-  description: z.string().optional(),
-  price: z.union([z.number().nonnegative(), z.string()]).optional(),
-  tags: z.array(z.string()).optional(),
-  extra: z.record(z.any()).optional()
-});
-
-const CategorySchema = z.object({
-  name: z.string().min(1),
-  items: z.array(ItemSchema)
-});
-
-const CatalogSchema = z.object({
-  title: z.string().min(1),
-  description: z.string().optional(),
-  categories: z.array(CategorySchema)
-});
-
-const ResponseSchema = z
-  .object({
-    confidence: z.number().min(0).max(1),
-    catalog: CatalogSchema.optional(),
-    note: z.string().optional()
-  })
-  .refine((obj) => Boolean(obj.catalog) !== Boolean(obj.note), {
-    message: "Either 'catalog' or 'note' must be present (not both)"
-  });
-
+/* -------------------------
+   Form parsing helper
+   ------------------------- */
 const parseForm = (req) => {
   const form = formidable({
     multiples: false,
@@ -58,13 +31,19 @@ const parseForm = (req) => {
   });
 };
 
+/* -------------------------
+   Helpers to normalize uploaded file object
+   ------------------------- */
 function normalizeUploadedFile(files) {
   if (!files || Object.keys(files).length === 0) return undefined;
+
   let fileEntry = files.file ?? files.chat ?? undefined;
+
   if (!fileEntry) {
     const vals = Object.values(files);
     if (vals.length > 0) fileEntry = vals[0];
   }
+
   if (Array.isArray(fileEntry)) fileEntry = fileEntry[0];
   if (!fileEntry) return undefined;
 
@@ -103,6 +82,9 @@ if (!geminiApiKey) {
 }
 const ai = new GoogleGenAI({ apiKey: geminiApiKey });
 
+/* -------------------------
+   Gemini call
+   ------------------------- */
 async function callGemini_extractCatalogue_withConfidence(fileText, threshold) {
   const systemInstruction = `
 You are an assistant that extracts a structured product/service catalogue from a plain-text group chat transcript.
@@ -150,23 +132,25 @@ Chat transcript END:
 `.trim();
 
   const combinedUserText = `${systemInstruction}\n\nPlease produce the JSON described above for the transcript.`;
-  const request = {
-    model: "gemini-2.5-flash",
-    contents: [
-      { role: "user", parts: [{ text: combinedUserText }] }
-    ],
-    temperature: 0.0
-  };
 
-  const resp = await ai.models.generateContent(request);
+  try {
+    // if (ai && typeof ai.models?.generateContent === "function") {
+      const request = {
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: combinedUserText }] }],
+        temperature: 0.0
+      };
+      const resp = await ai.models.generateContent(request);
+      if (typeof resp?.text === "string" && resp.text.length > 0) return resp.text;
+      if (resp?.output?.[0]?.content?.[0]?.text) return resp.output[0].content[0].text;
+      if (resp?.candidates?.[0]?.content?.[0]?.text) return resp.candidates[0].content[0].text;
+      return JSON.stringify(resp);
+    }
 
-  let contentText;
-  if (typeof resp?.text === "string" && resp.text.length > 0) contentText = resp.text;
-  else if (resp?.output?.[0]?.content?.[0]?.text) contentText = resp.output[0].content[0].text;
-  else if (resp?.candidates?.[0]?.content?.[0]?.text) contentText = resp.candidates[0].content[0].text;
-  else contentText = JSON.stringify(resp);
-
-  return contentText;
+    // throw new Error("AI client not configured on server. Set up Gemini/Vertex client or implement REST call.");
+   catch (err) {
+    throw new Error(`LLM call failed: ${err.message || String(err)}`);
+  }
 }
 
 /* -------------------------
@@ -191,6 +175,136 @@ function tryParseJSONorRecover(text) {
 }
 
 /* -------------------------
+   Manual validator
+   - returns { ok, errors (array), value (normalized) }
+   ------------------------- */
+function isObject(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function normalizePrice(v) {
+  if (v === null || v === undefined || v === "") return undefined;
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const cleaned = v.replace(/[^\d.-]+/g, "");
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+function validateModelResponse(parsed, threshold = CONFIDENCE_THRESHOLD) {
+  const errors = [];
+  if (!isObject(parsed)) {
+    errors.push("Top-level response must be an object");
+    return { ok: false, errors };
+  }
+
+  const { confidence } = parsed;
+  if (typeof confidence !== "number" || Number.isNaN(confidence)) {
+    errors.push("Missing or invalid 'confidence' (must be a number between 0 and 1)");
+    return { ok: false, errors };
+  }
+
+  const hasCatalog = parsed.catalog !== undefined;
+  const hasNote = parsed.note !== undefined;
+
+  if (!(hasCatalog ^ hasNote)) {
+    errors.push("Response must contain exactly one of 'catalog' or 'note'");
+    return { ok: false, errors };
+  }
+
+  if (hasNote) {
+    if (typeof parsed.note !== "string") errors.push("'note' must be a string");
+    return { ok: true, low_confidence: true, confidence, note: parsed.note, value: null, errors };
+  }
+
+  const catalog = parsed.catalog;
+  if (!isObject(catalog)) {
+    errors.push("'catalog' must be an object");
+    return { ok: false, errors };
+  }
+
+  const title = catalog.title;
+  if (typeof title !== "string" || title.trim().length === 0) {
+    errors.push("catalog.title must be a non-empty string");
+  }
+
+  if (catalog.description !== undefined && typeof catalog.description !== "string") {
+    errors.push("catalog.description must be a string");
+  }
+
+  if (!Array.isArray(catalog.categories)) {
+    errors.push("catalog.categories must be an array");
+  } else {
+    for (let ci = 0; ci < catalog.categories.length; ci++) {
+      const cat = catalog.categories[ci];
+      if (!isObject(cat)) {
+        errors.push(`catalog.categories[${ci}] must be an object`);
+        continue;
+      }
+      if (typeof cat.name !== "string" || cat.name.trim().length === 0) {
+        errors.push(`catalog.categories[${ci}].name must be a non-empty string`);
+      }
+      if (!Array.isArray(cat.items)) {
+        errors.push(`catalog.categories[${ci}].items must be an array`);
+      } else {
+        for (let ii = 0; ii < cat.items.length; ii++) {
+          const item = cat.items[ii];
+          if (!isObject(item)) {
+            errors.push(`catalog.categories[${ci}].items[${ii}] must be an object`);
+            continue;
+          }
+          if (typeof item.name !== "string" || item.name.trim().length === 0) {
+            errors.push(`catalog.categories[${ci}].items[${ii}].name must be a non-empty string`);
+          }
+          if (item.description !== undefined && typeof item.description !== "string") {
+            errors.push(`catalog.categories[${ci}].items[${ii}].description must be a string`);
+          }
+
+          if (item.price !== undefined && !(typeof item.price === "number" || typeof item.price === "string")) {
+            errors.push(`catalog.categories[${ci}].items[${ii}].price must be a number or string`);
+          }
+          if (item.tags !== undefined) {
+            if (!Array.isArray(item.tags) || item.tags.some(t => typeof t !== "string")) {
+              errors.push(`catalog.categories[${ci}].items[${ii}].tags must be an array of strings`);
+            }
+          }
+          if (item.extra !== undefined && !isObject(item.extra)) {
+            errors.push(`catalog.categories[${ci}].items[${ii}].extra must be an object`);
+          }
+        }
+      }
+    }
+  }
+
+  if (errors.length > 0) return { ok: false, errors };
+
+  // normalize prices & minimal normalization
+  const normalized = {
+    title: catalog.title.trim(),
+    description: catalog.description ? catalog.description.trim() : undefined,
+    categories: catalog.categories.map((cat) => ({
+      name: cat.name.trim(),
+      items: cat.items.map((it) => {
+        const normalizedPrice = normalizePrice(it.price);
+        return {
+          name: String(it.name).trim(),
+          description: it.description ? String(it.description).trim() : undefined,
+          price: normalizedPrice !== undefined ? normalizedPrice : undefined,
+          tags: Array.isArray(it.tags) ? it.tags.map(t => String(t).trim()) : [],
+          extra: isObject(it.extra) ? it.extra : undefined
+        };
+      })
+    }))
+  };
+
+  const isHigh = confidence >= threshold;
+
+  return { ok: true, low_confidence: !isHigh, confidence, catalog: normalized, errors: [] };
+}
+
+/* -------------------------
    API handler
    ------------------------- */
 export default async function handler(req, res) {
@@ -211,22 +325,42 @@ export default async function handler(req, res) {
 
     const rawModelOutput = await callGemini_extractCatalogue_withConfidence(fileText, CONFIDENCE_THRESHOLD);
 
-    const parsedRaw = tryParseJSONorRecover(rawModelOutput);
-
-    const validatedResp = ResponseSchema.parse(parsedRaw);
-
-    const { confidence, catalog, note } = validatedResp;
-
-    if (!catalog || confidence < CONFIDENCE_THRESHOLD) {
-      // Low confidence: do not persist. Return a helpful message to client with model note.
+    let parsedRaw;
+    try {
+      parsedRaw = tryParseJSONorRecover(rawModelOutput);
+    } catch (e) {
+      // Save rawModelOutput in meta for debugging but return parse error
       return res.status(200).json({
         ok: false,
-        reason: "low_confidence",
-        confidence,
-        note: note ?? "Model indicated low confidence and did not return a catalogue.",
+        reason: "parse_error",
+        message: "Model output was not valid JSON",
         rawModelOutput
       });
     }
+
+    // Validate top-level response shape (manual validator)
+    const validation = validateModelResponse(parsedRaw, CONFIDENCE_THRESHOLD);
+    if (!validation.ok) {
+      return res.status(200).json({
+        ok: false,
+        reason: "invalid_schema",
+        errors: validation.errors,
+        rawModelOutput
+      });
+    }
+
+    // If model explicitly returned a note (low confidence) — do not persist
+    if (validation.low_confidence || !validation.catalog) {
+      return res.status(200).json({
+        ok: false,
+        reason: "low_confidence",
+        confidence: validation.confidence ?? parsedRaw.confidence,
+        note: parsedRaw.note ?? "Model indicated low confidence and did not return a catalogue.",
+        rawModelOutput
+      });
+    }
+
+    const catalog = validation.catalog;
 
     // Persist catalog into DB
     const catalogInsert = await query(
@@ -259,15 +393,16 @@ export default async function handler(req, res) {
       }
     }
 
-    try { await fs.unlink(filePath).catch(()=>{}); } catch (_) {}
+    try {
+      await fs.unlink(filePath).catch(() => {});
+    } catch (_) {}
 
-    // Return saved info to client
     return res.status(200).json({
       ok: true,
       catalogId,
       storedItemsCount: insertedItems.length,
-      confidence,
-      parsedCatalogue: catalog
+      confidence: parsedRaw.confidence,
+      parsedCatalogue: { title: catalog.title, description: catalog.description, categories: catalog.categories }
     });
   } catch (err) {
     console.error("upload handler error:", err);
