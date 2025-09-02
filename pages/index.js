@@ -1,3 +1,4 @@
+// pages/index.js
 import { useState, useEffect } from "react";
 import Link from "next/link";
 
@@ -48,6 +49,8 @@ export default function Home() {
     }
   }
 
+  const exportUrl = (id, format) => `/api/catalogs/${id}/export?format=${encodeURIComponent(format)}`;
+
   return (
     <div className="container">
       <header className="header">
@@ -68,7 +71,7 @@ export default function Home() {
       <section className="card" aria-labelledby="upload-heading">
         <div className="upload-left">
           <h3 id="upload-heading" style={{ margin: 0 }}>Upload transcript</h3>
-          <p className="small" style={{ marginTop: 6 }}>Plain `.txt`</p>
+          <p className="small" style={{ marginTop: 6 }}>Plain `.txt` (UTF-8). Keep one conversation per file for best extraction.</p>
 
           <div className="upload-cta" style={{ marginTop: 12 }}>
             <label className="file-input" aria-label="Choose chat file">
@@ -87,7 +90,6 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Minimal right help */}
         <aside className="help" aria-hidden="false">
           <strong style={{ display: "block", marginBottom: 8 }}>Note</strong>
           <div className="small">Results are validated and saved only if confident. Use clear chats for best results.</div>
@@ -102,7 +104,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Low confidence message (no raw outputs shown to normal user) */}
         {response && response.ok === false && response.reason === "low_confidence" && (
           <div className={`catalog-card ${animate ? "animate-in" : ""}`}>
             <div className="catalog-header">
@@ -123,7 +124,6 @@ export default function Home() {
           </div>
         )}
 
-        {/* Successful catalogue */}
         {response && response.ok === true && response.parsedCatalogue && (
           <article className={`catalog-card ${animate ? "animate-in" : ""}`} aria-labelledby="catalog-title">
             <div className="catalog-header">
@@ -165,11 +165,19 @@ export default function Home() {
                     </div>
                   ))}
                 </div>
+
+                {/* small export row per category (optional) */}
               </section>
             ))}
 
             <footer style={{ marginTop: 18 }} className="small">
-              Tip: If the menu is missing items, try cleaning the transcript (one message per line) and re-uploading.
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 700 }}>Export catalogue:</span>
+                <a className="link-btn" href={exportUrl(response.catalogId, "csv")}>CSV</a>
+                {/* <a className="link-btn" href={exportUrl(response.catalogId, "json")}>JSON</a> */}
+                {/* <a className="link-btn" href={exportUrl(response.catalogId, "md")}>Markdown</a> */}
+              </div>
+              <div style={{ marginTop: 8 }}>Tip: CSV is ideal for spreadsheets.</div>
             </footer>
           </article>
         )}

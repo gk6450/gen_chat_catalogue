@@ -28,8 +28,8 @@ export default function CatalogsPage() {
     <div className="container">
       <header className="header">
         <div>
-          <h1 className="title">Saved Catalogues</h1>
-          <p className="tagline">All catalogues parsed and stored in the database.</p>
+          <h1 className="title">Saved Catalogs</h1>
+          <p className="tagline">All Catalogs parsed and stored in the database.</p>
         </div>
         <div className="nav-actions">
           <Link href="/" legacyBehavior>
@@ -58,9 +58,6 @@ export default function CatalogsPage() {
                   <Link href={`/catalogs/${c.id}`} legacyBehavior>
                     <a className="link-btn">View</a>
                   </Link>
-                  {/* <a href={`/api/catalogs/${c.id}/download`} className="link-btn" download>
-                    Export
-                  </a> */}
                 </div>
               </div>
 

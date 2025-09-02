@@ -8,6 +8,7 @@ export default function CatalogDetail() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
+  const [animate, setAnimate] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -17,7 +18,10 @@ export default function CatalogDetail() {
         const res = await fetch(`/api/catalogs/${id}`);
         const j = await res.json();
         if (!res.ok) throw new Error(j.error || "Failed to load");
-        if (mounted) setData(j);
+        if (mounted) {
+          setData(j);
+          setAnimate(true);
+        }
       } catch (e) {
         setErr(String(e));
       } finally {
@@ -28,6 +32,8 @@ export default function CatalogDetail() {
     return () => { mounted = false; };
   }, [id]);
 
+  const exportUrl = (format) => `/api/catalogs/${id}/export?format=${encodeURIComponent(format)}`;
+
   return (
     <div className="container">
       <header className="header">
@@ -36,16 +42,14 @@ export default function CatalogDetail() {
           <p className="tagline">{data?.catalog?.description}</p>
         </div>
         <div className="nav-actions">
-          <Link href="/catalogs" legacyBehavior>
-            <a className="link-btn">Back to list</a>
-          </Link>
-          <Link href="/" legacyBehavior>
-            <a className="link-btn">Upload</a>
-          </Link>
+          <Link href="/catalogs" legacyBehavior><a className="link-btn">Back to list</a></Link>
+          <Link href="/" legacyBehavior><a className="link-btn">Upload</a></Link>
           {id && (
-            <a href={`/api/catalogs/${id}/download`} className="link-btn primary" style={{ marginLeft: 6 }}>
-              Download Chat
-            </a>
+            <>
+              <a href={exportUrl("csv")} className="link-btn">Export CSV</a>
+              {/* <a href={exportUrl("json")} className="link-btn">Export JSON</a> */}
+              {/* <a href={exportUrl("md")} className="link-btn">Export MD</a> */}
+            </>
           )}
         </div>
       </header>
@@ -58,7 +62,7 @@ export default function CatalogDetail() {
         ) : !data?.catalog ? (
           <div className="small">Not found.</div>
         ) : (
-          <article className="catalog-card animate-in">
+          <article className={`catalog-card ${animate ? "animate-in" : ""}`}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start" }}>
               <div>
                 <h2 style={{ marginTop: 0 }}>{data.catalog.title}</h2>
